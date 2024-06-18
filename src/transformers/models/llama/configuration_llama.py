@@ -184,9 +184,27 @@ class LlamaConfig(PretrainedConfig):
             )
         rope_scaling_type = self.rope_scaling.get("type", None)
         rope_scaling_factor = self.rope_scaling.get("factor", None)
-        if rope_scaling_type is None or rope_scaling_type not in ["linear", "dynamic"]:
+        if rope_scaling_type is None or rope_scaling_type not in ["linear", "dynamic", "long"]:
             raise ValueError(
-                f"`rope_scaling`'s type field must be one of ['linear', 'dynamic'], got {rope_scaling_type}"
+                f"`rope_scaling`'s type field must be one of ['linear', 'dynamic', 'long'], got {rope_scaling_type}"
             )
-        if rope_scaling_factor is None or not isinstance(rope_scaling_factor, float) or rope_scaling_factor <= 1.0:
-            raise ValueError(f"`rope_scaling`'s factor field must be a float > 1, got {rope_scaling_factor}")
+
+        if rope_scaling_factor is None:
+            raise ValueError(f"`rope_scaling`'s factor field must be set, got {rope_scaling_factor}")
+
+        if rope_scaling_type == "long":
+            if not isinstance(rope_scaling_factor, dict):
+                raise ValueError(f"`rope_scaling`'s factor field must be a dictionary, got {rope_scaling_factor}")
+            short_factor = rope_scaling_factor.get("short_factor")
+            long_factor = rope_scaling_factor.get("long_factor")
+            if short_factor is None or long_factor is None:
+                raise ValueError(f"`rope_scaling`'s factor field must contain both short_factor and long_factor")
+            if not isinstance(short_factor, float) or not isinstance(long_factor, float):
+                raise ValueError(
+                    f"`rope_scaling`'s factor field must contain floats, got {short_factor}, {long_factor}")
+            if short_factor <= 1.0 or long_factor <= 1.0:
+                raise ValueError(
+                    f"`rope_scaling`'s factor field must contain floats > 1, got {short_factor}, {long_factor}")
+        else:
+            if not isinstance(rope_scaling_factor, float) or rope_scaling_factor <= 1.0:
+                raise ValueError(f"`rope_scaling`'s factor field must be a float > 1, got {rope_scaling_factor}")

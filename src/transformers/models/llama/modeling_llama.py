@@ -18,6 +18,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import math
+import warnings
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -147,6 +148,91 @@ class LlamaDynamicNTKScalingRotaryEmbedding(LlamaRotaryEmbedding):
 
         cos, sin = super().forward(x, position_ids)
         return cos, sin
+
+
+class LlamaLongScalingRotaryEmbedding(LlamaRotaryEmbedding):
+    def __init__(
+            self,
+            dim,
+            short_factor,
+            long_factor,
+            scaling_factor=None,
+            max_position_embeddings=2048,
+            base=10000,
+            device=None
+    ):
+        super().__init__(dim, max_position_embeddings, base, device)
+        self.starting_tokens = scaling_factor  # n_hat in the paper
+
+        if isinstance(short_factor, float) and short_factor == 1.0:
+            warnings.warn(
+                "Short factor is set to 1.0. This will result in the same behavior as the original RoPE."
+            )
+        if isinstance(short_factor, float) and long_factor == 1.0:
+            warnings.warn(
+                "Long factor is set to 1.0. This will result in the same behavior as the original RoPE."
+            )
+
+        self._short_factor = None
+        self._long_factor = None
+
+        self.short_factor = short_factor
+        self.long_factor = long_factor
+
+    def _compute_inv_freq(self, factor):
+        factor = torch.tensor(factor, dtype=torch.float32)
+        inv_freq_shape = torch.arange(0, self.dim, 2, dtype=torch.int64).float() / self.dim
+        inv_freq = 1.0 / (factor * self.base ** inv_freq_shape)
+        return inv_freq
+
+    @property
+    def short_factor(self):
+        return self._short_factor
+
+    @short_factor.setter
+    def short_factor(self, value):
+        self._short_factor = value
+        short_inv_freq = self._compute_inv_freq(value)
+        self.register_buffer("short_inv_freq", short_inv_freq, persistent=False)
+
+    @property
+    def long_factor(self):
+        return self._long_factor
+
+    @long_factor.setter
+    def long_factor(self, value):
+        self._long_factor = value
+        long_inv_freq = self._compute_inv_freq(value)
+        self.register_buffer("long_inv_freq", long_inv_freq, persistent=False)
+
+    @torch.no_grad()
+    def forward(self, x, position_ids, seq_len=None):
+        seq_len = torch.max(position_ids) + 1
+
+        if seq_len > self.max_position_embeddings:
+            inv_freq = self.long_inv_freq
+        else:
+            inv_freq = self.short_inv_freq
+
+        inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+
+        position_ids_expanded = position_ids[:, None, :].float()
+        device_type = x.device.type
+        device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
+        with (torch.autocast(device_type=device_type, enabled=False)):
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+
+            if self.starting_tokens is not None:
+                ori_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+                freqs[:, :self.starting_tokens] = (
+                    (ori_freq_expanded.float() @ position_ids_expanded[..., :self.starting_tokens].float())
+                    .transpose(1, 2)
+                )
+
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos()
+            sin = emb.sin()
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
 def rotate_half(x):
@@ -287,6 +373,15 @@ class LlamaAttention(nn.Module):
                     self.head_dim,
                     max_position_embeddings=self.max_position_embeddings,
                     scaling_factor=scaling_factor,
+                    base=self.rope_theta,
+                )
+            elif scaling_type == "long":
+                self.rotary_emb = LlamaLongScalingRotaryEmbedding(
+                    self.head_dim,
+                    max_position_embeddings=self.max_position_embeddings,
+                    short_factor=scaling_factor.get("short_factor", 1.0),
+                    long_factor=scaling_factor.get("long_factor", 1.0),
+                    scaling_factor=scaling_factor.get("scaling_factor"),
                     base=self.rope_theta,
                 )
             else:
