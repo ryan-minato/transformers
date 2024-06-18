@@ -218,7 +218,7 @@ class LlamaLongScalingRotaryEmbedding(LlamaRotaryEmbedding):
         device_type = x.device.type
         device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
         with (torch.autocast(device_type=device_type, enabled=False)):
-            inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+            inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(device_type)
             freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
 
             if self.starting_tokens is not None:
